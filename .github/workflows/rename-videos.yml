@@ -2,7 +2,7 @@ name: Rename YouTube Videos
 
 on:
   schedule:
-    - cron: '0 1 * * *' # Exécution à 03:00 Europe/Brussels (CET/CEST = UTC+1/2)
+    - cron: '10 1 * * *' # Correspond à 02:10 CET (hiver) et 03:10 CEST (été)
   workflow_dispatch:
 
 jobs:
@@ -31,5 +31,5 @@ jobs:
           echo "$CLIENT_SECRET" > client_secrets.json
           echo "$TOKEN_JSON" > token.json
 
-      - name: Run rename script
+      - name: Run script
         run: python script.py
