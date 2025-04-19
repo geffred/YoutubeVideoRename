@@ -2,16 +2,23 @@ name: Rename YouTube Videos
 
 on:
   schedule:
-    - cron: '10 1 * * *' # Correspond à 02:10 CET (hiver) et 03:10 CEST (été)
+    - cron: '30 23 * * *'  # 23:30 UTC = 00:30 CET (hiver) / 01:30 CEST (été)
   workflow_dispatch:
 
 jobs:
   run-script:
     runs-on: ubuntu-latest
+    env:
+      TZ: Europe/Brussels  # Définit le fuseau horaire belge
 
     steps:
+      - name: Check timezone
+        run: |
+          echo "🕒 UTC Time: $(date)"
+          echo "🕒 Belgian Time: $(TZ='Europe/Brussels' date +'%H:%M')"
+
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -21,15 +28,16 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install google-api-python-client google-auth google-auth-oauthlib
+          pip install -r requirements.txt
 
-      - name: Create secrets
+      - name: Create auth files
         env:
           CLIENT_SECRET: ${{ secrets.CLIENT_SECRET_JSON }}
           TOKEN_JSON: ${{ secrets.TOKEN_JSON }}
         run: |
           echo "$CLIENT_SECRET" > client_secrets.json
           echo "$TOKEN_JSON" > token.json
+          chmod 600 client_secrets.json token.json
 
       - name: Run script
         run: python script.py
