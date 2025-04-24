@@ -1,19 +1,19 @@
 import os
 import time
+import isodate
+from datetime import datetime
 import google_auth_oauthlib.flow
 import googleapiclient.discovery
 import googleapiclient.errors
-from datetime import datetime
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.errors import HttpError
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.force-ssl"]
 MAX_RETRIES = 3
-REQUEST_DELAY = 2  # seconds between API calls
+REQUEST_DELAY = 2  # seconds
 
 def authenticate_youtube():
-    """Authenticate with YouTube API with token reuse and refresh logic."""
     creds = None
     token_file = "token.json"
     
@@ -47,22 +47,16 @@ def authenticate_youtube():
     return googleapiclient.discovery.build("youtube", "v3", credentials=creds)
 
 def is_long_video(duration_iso):
-    """Check if video is longer than 60 seconds (not a Short)."""
-    # Parse ISO 8601 duration (e.g., PT1M30S, PT60S, PT5M)
-    duration = duration_iso[2:]  # Remove 'PT' prefix
-    if 'H' in duration:
-        return True  # Contains hours = long video
-    if 'M' in duration:
-        minutes = int(duration.split('M')[0])
-        return minutes > 1 or (minutes == 1 and 'S' in duration)
-    # Only seconds case
-    seconds = int(duration.replace('S', ''))
-    return seconds > 60
+    """Check if a video is longer than 60 seconds using isodate."""
+    try:
+        duration = isodate.parse_duration(duration_iso)
+        return duration.total_seconds() > 60
+    except Exception as e:
+        print(f"⚠️ Duration parsing error: {e}")
+        return False
 
 def get_my_videos(youtube):
-    """Retrieve only long videos (excluding Shorts) with efficient batching."""
     try:
-        # First get channel content details
         channel_response = youtube.channels().list(
             part="contentDetails",
             mine=True,
@@ -74,7 +68,6 @@ def get_my_videos(youtube):
         next_page_token = None
         
         while True:
-            # Get batch of videos from playlist
             playlist_response = youtube.playlistItems().list(
                 part="snippet",
                 playlistId=uploads_playlist,
@@ -83,13 +76,11 @@ def get_my_videos(youtube):
                 fields="nextPageToken,items/snippet(resourceId/videoId,title)"
             ).execute()
             
-            # Batch process video durations
             video_batch = [(item['snippet']['resourceId']['videoId'], 
-                          item['snippet']['title']) 
-                         for item in playlist_response['items']]
+                            item['snippet']['title']) 
+                           for item in playlist_response['items']]
             
             if video_batch:
-                # Get durations for this batch
                 video_ids = [vid for vid, _ in video_batch]
                 duration_response = youtube.videos().list(
                     part="contentDetails",
@@ -97,20 +88,19 @@ def get_my_videos(youtube):
                     fields="items(id,contentDetails/duration)"
                 ).execute()
                 
-                # Create duration mapping
-                duration_map = {item['id']: item['contentDetails']['duration'] 
-                              for item in duration_response['items']}
+                duration_map = {
+                    item['id']: item['contentDetails']['duration'] 
+                    for item in duration_response['items']
+                }
                 
-                # Filter long videos
                 for video_id, title in video_batch:
                     if is_long_video(duration_map.get(video_id, 'PT60S')):
                         long_videos.append((video_id, title))
             
             next_page_token = playlist_response.get('nextPageToken')
-            if not next_page_token or len(long_videos) >= 100:  # Safety limit
+            if not next_page_token or len(long_videos) >= 100:
                 break
-                
-            time.sleep(REQUEST_DELAY)  # Rate limiting
+            time.sleep(REQUEST_DELAY)
             
         return long_videos
     except Exception as e:
@@ -118,9 +108,7 @@ def get_my_videos(youtube):
         return []
 
 def rename_video(youtube, video_id, old_title, retry_count=0):
-    """Rename video with retry logic and quota management."""
     try:
-        # First get current video details
         video_response = youtube.videos().list(
             part="snippet",
             id=video_id,
@@ -129,30 +117,29 @@ def rename_video(youtube, video_id, old_title, retry_count=0):
         
         snippet = video_response['items'][0]['snippet']
         
-        # Generate new title
         today = datetime.now()
-        months_en = {
+        months_fr = {
             1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril", 
             5: "Mai", 6: "Juin", 7: "Juillet", 8: "Août", 
             9: "Septembre", 10: "Octobre", 11: "Novembre", 12: "Décembre"
         }
-        days_en =[
+        days_fr = [
             "Lundi", "Mardi", "Mercredi", "Jeudi", 
             "Vendredi", "Samedi", "Dimanche"
         ]
         
-        day_name = days_en[today.weekday()]
-        month_name = months_en[today.month]
+        day_name = days_fr[today.weekday()]
+        month_name = months_fr[today.month]
         
-        new_title = (f"Prière du {day_name} {today.day:02d} {month_name} {today.year} "
-                    "Psaume 91 🙏 | Prière du Matin Pour Bien Commencer la Journée")
+        new_title = (
+            f"Prière du {day_name} {today.day:02d} {month_name} {today.year} "
+            "Psaume 91 🙏 | Prière du Matin Pour Bien Commencer la Journée"
+        )
         
-        # Skip if title already matches
         if snippet['title'] == new_title:
             print(f"⏩ Video {video_id} already has correct title")
             return True
         
-        # Update video
         youtube.videos().update(
             part="snippet",
             body={
@@ -171,9 +158,9 @@ def rename_video(youtube, video_id, old_title, retry_count=0):
     except HttpError as e:
         if e.resp.status == 403 and 'quotaExceeded' in str(e):
             print("❌ Quota exceeded - stopping process")
-            raise  # Re-raise to stop execution
+            raise
         elif retry_count < MAX_RETRIES:
-            wait_time = (2 ** retry_count) * 5  # Exponential backoff
+            wait_time = (2 ** retry_count) * 5
             print(f"⚠️ Retry {retry_count+1} in {wait_time}s for {video_id}")
             time.sleep(wait_time)
             return rename_video(youtube, video_id, old_title, retry_count+1)
@@ -185,7 +172,6 @@ def rename_video(youtube, video_id, old_title, retry_count=0):
         return False
 
 def auto_rename():
-    """Main function with quota awareness and progress tracking."""
     title_base = [
         "Prière puissante Psaume 91| Prière du matin Pour Bien Commencer la Journée",
         "Prière Puissante de Protection ✨ Psaumes 23, 70, 91 | Prière du Matin pour une Journée Bénie 🙏",
@@ -193,7 +179,8 @@ def auto_rename():
         "Bénédictions et Protection Divine pour Vous 🙏 Prière du Matin Pour Bien Commencer la Journée",
         "La Prière qui va REVOLUTIONNER Votre Carême | Prière du matin Pour Bien Commencer la Journée",
         "Commencez votre Journée avec Bénédictions Psaume 91 | Prière du matin Pour Bien Commencer la Journée",
-        ]
+    ]
+    
     try:
         youtube = authenticate_youtube()
         print("🔍 Fetching your videos...")
@@ -208,14 +195,13 @@ def auto_rename():
         
         for idx, (video_id, old_title) in enumerate(videos, 1):
             if old_title in title_base:
-                print(f"⏩ Skipping video with 'great title' ")
+                print(f"⏩ Skipping video with 'great title'")
                 continue
                 
             print(f"\n🔄 Processing video {idx}/{len(videos)}")
             if rename_video(youtube, video_id, old_title):
                 success_count += 1
-            
-            # Delay between updates to avoid rate limiting
+                
             if idx < len(videos):
                 time.sleep(REQUEST_DELAY)
         
